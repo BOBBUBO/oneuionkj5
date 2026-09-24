@@ -1,9 +1,40 @@
 # One UI (Android 16, a15x port) bootloop on TECNO Spark 20 (KJ5) — Root Cause & Fix
 
-> **Flash this:** `oneuiandroid16system-FIXED-v4.img.gz` (all three fixes below + setup-wizard skip).
-> 🎉 v3 boots fully into One UI — remaining known issue it fixes: SetupWizard stuck on empty region list.
+> **Flash this:** `oneuiandroid16system-FIXED-v10.img.gz` — confirmed working: launcher up, no more SystemUI crash loops on multitasking/screenshot/messages.
 
-## Fixing status
+## Understanding of the app-layer bugs so far
+
+- **Everything Samsung-signed must stay Samsung-signed.** Re-signing SystemUI breaks
+  `android.uid.systemui` (platform-key-only shared UID, demoted to normal uid, bootloop).
+  Re-signing TouchWizHome removes its hidden-API exemption → cascade of
+  `NoSuchMethodError`/`NoSuchFieldException` (blacklisted framework internals).
+- v10 therefore keeps ALL Samsung apks original/signed and fixes the SystemUI crash
+  by patching the unsigned framework (`services.jar`) instead.
+
+## v8 delta (on top of v4)
+
+1. `TouchWizHome_2017.apk`: removed `readPermission`/`writePermission` from
+   `com.android.launcher3.LauncherProvider` (binary AXML patch) → SystemUI's
+   `KshDataUtils.isDexDisplay()` no longer throws SecurityException on recents/
+   screenshot/system actions. Launcher re-signed with test key — it's a normal-uid
+   priv-app (no `sharedUserId`/`android.uid.*`), so re-signing is harmless; its stale
+   `oat/` was removed (re-dexopts on first boot).
+2. Removed crash-spammers: `SamsungDeviceHealthManagerService` (SDHMS, NPE on missing
+   Samsung CSC/thermal config) and `SohService` (NPE) with their oat.
+3. SystemUI and ClockPack_v80 left **completely stock** (Samsung signatures keep
+   `android.uid.systemui` intact — v5/v6's failure mode is avoided by construction).
+4. Everything from v4 unchanged: mediatek allowlist fix, vibrator SEH + AStatus
+   null-safety, SetupWizard skip.
+
+## Reversal explained (old v5-v7 attempts)
+
+Re-signing SystemUI can't work: Android only allows the **platform key** on
+`android.uid.*` shared UIDs, so SystemUI got demoted to a normal app uid and lost
+`MANAGE_ACTIVITY_TASKS` (plank crash loop). The right fix is on the provider side —
+v8 does that. v7 content was equivalent but built on the messy v5 lineage; v8 is a
+clean rebuild from v4 directly.
+
+## Fix history / status
 
 | # | Bug | Fix |
 |---|-----|-----|
@@ -11,6 +42,12 @@
 | 2 | system_server SIGSEGV in `libvibratorservice.so` — SEH HAL null deref | v2: 19 call sites short-circuited |
 | 3 | Follow-on SIGSEGV: `AStatus_getExceptionCode(NULL)` in the "failure" path | v3: libbinder_ndk null-safe patch |
 | 4 | SetupWizard stuck at "Select region" (empty country list on non-Samsung CSC) | v4: `ro.setupwizard.mode=DISABLED` + removed `SecSetupWizard_Global.apk` |
+| 5 | SystemUI crash loop: `SecurityException` opening launcher provider → `KshDataUtils.isDexDisplay()` | v5: patched SystemUI.apk smali (method returns `false`) + re-signed (test key) |
+| 6 | Crash spam: `com.sec.android.sdhms` NPE loop; `com.samsung.sait.sohservice` NPE | v5: removed `SamsungDeviceHealthManagerService.apk` + `SohService.apk` (+ stale oat) |
+| 7 | v5 boot failure: `IllegalStateException: Signature mismatch on system package com.android.systemui for shared user android.uid.systemui` — Samsung-signed `ClockPack_v80` shares that UID | ~~v6: removed ClockPack~~ **reverted in v7** |
+| 8 | v6 regressions: SystemUI demoted to app uid 10210 (test-key signature cannot claim `android.uid.systemui`) → `MANAGE_ACTIVITY_TASKS` denied → plank `TestProtocolProvider` crash loop 33× | v8: clean rebuild from v4 + stripped launcher provider perms + removed SDHMS/SohService (SystemUI/ClockPack untouched) |
+| 9 | Launcher crash → black screen: `NoSuchMethodError: DeviceStateManager.<init>()V` — but the real root was deeper: the launcher's crash stream (`getService()`, `getInstance()`, `windowConfiguration`, `FoldStateListener`, `MANAGE_ROLE_HOLDERS`) all turned out to be **hidden-API blacklist denials** — Samsung-signed apps get hidden-API exemption; re-signing lost it | — v8/v9 approach (re-signed launcher+SystemUI edits) abandoned; see v10 |
+| 10 | v7-v9 lesson chain | **v10 (flash this)**: launcher + SystemUI + ClockPack restored 100% stock Samsung-signed; SystemUI crash fixed instead at framework level: patched `services.jar` `ContentProviderHelper.checkContentProviderPermission()` to return allow for authority `com.sec.android.app.launcher.settings` (the launcher settings provider), SecurityException gone without touching any signed app. SDHMS/SohService still removed. `services` odex/vdex dropped → one-time re-dexopt on first boot is expected (slower first boot) |
 
 
 
@@ -134,11 +171,104 @@ settings put secure user_setup_complete 1
 ```
 Language/region can then be changed normally in Settings.
 
-Verified with `e2fsck -f`, images repacked:
-- `oneuiandroid16system-FIXED-v4.img.gz` — **flash this** (fixes 1+2+3+4)
-- `oneuiandroid16system-FIXED-v3.img.gz` — boots fully, SUW stuck on region
-- `oneuiandroid16system-FIXED-v2.img.gz` — fixes 1+2
-- `oneuiandroid16system-FIXED-v1.img.gz` — fix #1 only
+## Fix #5 (v5) details — SystemUI SecurityException
+
+SystemUI's keyguard-shortcut controller (`KshDataUtils.isDexDisplay()` in
+`CentralSurfacesImpl$8.onReceive`) queries the One UI Home `LauncherProvider`.
+That provider declares `requires com.samsung.android.launcher.permission.READ_SETTINGS`
+(`protectionLevel="normal"`), but SystemUI's manifest has **no `<uses-permission>`**
+for it on this build → unhandled SecurityException → SystemUI restarts on any
+SystemUI-event (recents, screenshots, panel changes).
+
+Apktool full rebuild was impossible (Samsung's obfuscated `$$`-prefixed resources
+fail aapt2), so only `classes3.dex` was edited:
+
+```
+smali: com/android/systemui/statusbar/model/KshDataUtils.smali
+.method public final isDexDisplay()Z
+    .registers 11
+    const/4 v0, 0x0      # patched-in early return
+    return v0            # (kills DeX-display detection; harmless on this phone)
+```
+
+Rebuilt with `smali-2.5.2` (baksmali/smali, dex 039), swapped into the APK
+(zip entry replace — resources/signature scheme untouched), re-signed with a
+fresh test key (`apksigner`, v1+v3). Note: priv-app privileges for
+`com.android.systemui` are package-name based (`privapp-permissions-*.xml`), so
+re-signing is safe; stale `oat/` removed so ART re-dexopts once at first boot.
+
+`SamsungDeviceHealthManagerService` (thermal/SIOP, NPE on missing Samsung CSC config;
+loop-crashes forever) and `SohService` (NPE on null Integer) were fully removed —
+they are background analytics/thermal services that nothing in the port depends on.
+
+Standalone Samsung-Messages crash (`Unknown authority com.samsung.android.scs.ai.search`)
+was seen once in a background thread and left in place — it's not related to the
+reported freezes and is the stock SMS app.
+
+## Final notes on the launcher/SystemUI puzzle (v5–v10)
+
+The app-side crashes were aLinkedList of same-root issues; chaining decisions:
+
+1. **SystemUI SecurityException on the launcher provider** (`isDexDisplay` →
+   `com.android.launcher3.LauncherProvider`, permission `READ_SETTINGS` = `normal`)
+   — port's SystemUI manifest simply lacks the `<uses-permission>`; and you cannot
+   re-sign SystemUI (its `sharedUserId=android.uid.systemui` is a platform-cert-only
+   shared UID — RESIGNED SystemUI gets demoted to a normal uid and boot-loops.
+   Verified empirically: uid 10210 instead of 10076, MANAGE_ACTIVITY_TASKS denied).
+2. **Fixing it by stripping the provider perms in TouchWizHome's manifest** → required
+   re-signing the launcher → launcher immediately lost Samsung's **hidden-API
+   exemption** and started dying on every `@UnsupportedAppUsage` blacklist member
+   (`DeviceStateManager.<init>()V` & `$FoldStateListener`, `ActivityTaskManager.
+   getService()/getInstance()`, `Configuration.windowConfiguration`,
+   `IWindowManager.getTopFocusedDisplayId()`, role-holder permissions...). Blind alley.
+3. **Final (winning) move — framework-side exception, no signed app touched:**
+   `services.jar` is unsigned. Patch
+   `com.android.server.am.ContentProviderHelper.checkContentProviderPermission` to
+   immediately return allow (`null`) when `providerInfo.authority.equals("com.sec.
+   android.app.launcher.settings")` — smali-injected before all checks, re-assembled
+   with apktool (which handles Android 16 dex v041 — upstream JesusFreke smali 2.5.2
+   does not). `services.odex/vdex` + `services.art` + rootfs `services.vdex` removed,
+   so ART re-dexopts system server classes on first boot (one slow boot).
+
+smali sketch:
+```
+const-string v4, "com.sec.android.app.launcher.settings"
+iget-object v5, p1, Landroid/content/pm/ProviderInfo;->authority:Ljava/lang/String;
+invoke-virtual {v4, v5}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
+move-result v4
+if-eqz v4, :skip
+    const/4 p0, 0x0
+    return-object p0   ; null == access allowed
+:skip
+```
+
+### Tooling notes
+- smali 2.5.2 handles dex ≤039 only. Framework/launcher dexes were 039 (fine);
+  services.jar classes.dex is **dex 041** → apktool 3.x's bundled smali handled it.
+- Samsung apks are often resource-obfuscated (`$$`-prefixed names) — apktool `b`
+  full resource rebuild fails on those; use dex-only zip replacement for APK edits.
+- Releasing anything on this One UI stack: priv-app privileges are tied to
+  *package name* (privapp-permissions XMLs), but *hidden API exemption + shared
+  uids are tied to the platform signing cert*. Those two certs must remain Samsung's.
+
+## Older content (history)
+
+AOSP enforces: packages joining an `android.uid.*` shared ID **must be platform-signed**
+(the shared UID's owner-side signature is the ROM's platform cert). Any re-sign of
+SystemUI demotes it to a regular app uid (v6 log: uid 10210) regardless of data wipes.
+If you ever patch SystemUI.apk again, the only working route is signing with the ROM's
+platform keys — otherwise patch from the *other* side of the check (launcher/provider),
+like v7 does.
+
+## TrebleDroid settings app note
+
+The TrebleDroid/TrebleApp settings app is made for phh-treble AOSP GSIs (it hooks phh's
+treble framework patches). This One UI image doesn't contain those framework hooks, so
+its options would mostly no-op — not worth baking into the system. If you want it
+anyway, just install the APK like a normal app after boot; no image change needed.
+
+Verified with `e2fsck -f`. Current file:
+- `oneuiandroid16system-FIXED-v7.img.gz` — **flash this**
 
 Flash and test:
 ```

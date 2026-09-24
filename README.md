@@ -1,37 +1,45 @@
 # One UI (Android 16, a15x port) for TECNO Spark 20 (KJ5)
 
-Working One UI Android 16 GSI port on the TECNO Spark 20 (KJ5, MT6768/Transsion), fixed to boot on this device.
+Fully booting One UI 16 GSI port on the TECNO Spark 20 (KJ5, MT6768 / Transsion), fixed for this device.
 
-## Status: boots to launcher ✅
+## Status: boots & stable with One UI Home ✅
 
-Flashed and tested on rooted KJ5 (KernelSU), permissive boot image, AVB/vbmeta disabled.
-Three kernel-/userspace-level bootblockers from the a15x port were fixed inside the image:
+Each flashable image below has an increasing set of fixes. Use **FIXED-v10** (latest).
+
+Flash & hardware-tested on rooted KJ5 (KernelSU, permissive boot, AVB/vbmeta disabled) — via fastboot or DSU.
 
 1. **Zygote abort** — `Not allowlisted: /system/system_ext/framework/mediatek-common.jar`
-   (bundled `system_ext` symlink vs. Android's fork fd-allowlist) → fixed by restoring the
-   stock layout (`/system_ext` real dir).
-2. **system_server vibrator crash** — `libvibratorservice.so` dereferenced Samsung's SEH
+   (bundled `system_ext` symlink vs. Android's fork fd-allowlist) → restored stock layout
+   (`/system_ext` real dir).
+2. **system_server vibrator crash** — `libvibratorservice.so` deref'd Samsung's SEH
    vibrator HAL without null-checks (19 call sites patched to fail safely).
-3. **Follow-on crash** — `AStatus_getExceptionCode(NULL)` in `libbinder_ndk.so` patched
-   to return `EX_UNSUPPORTED_OPERATION`.
-4. **SetupWizard region screen stuck** — Samsung's region list can't resolve on this
-   device; SetupWizard is disabled (`ro.setupwizard.mode=DISABLED`, SecSetupWizard removed).
+3. **Follow-on crash** — `AStatus_getExceptionCode(NULL)` in `libbinder_ndk.so` →
+   null-safe fix.
+4. **SetupWizard region screen stuck** — removed Samsung SecSetupWizard
+   (`ro.setupwizard.mode=DISABLED`).
+5. **SystemUI crash loop on any action** — `SecurityException` on OneUI Home's
+   launcher settings provider (their SystemUI build lacks the uses-permission).
+   Fixed **without touching signed apps** (see report for why re-signing is fatal):
+   patched framework `services.jar` to allow the launcher settings provider.
+6. **Launcher black screen** — reverted any signature change on TouchWizHome; a
+   Samsung-signed app must keep Samsung's certificate or hidden-API calls die.
+   Also removed crash-spamming `SamsungDeviceHealthManagerService` + `SohService`.
 
-Full technical write-up (root causes, disassembly notes, guidance for other One UI ports):
+Full write-up with disassembly notes and per-version details:
 👉 **[FIX_REPORT.md](FIX_REPORT.md)**
 
 ## Install
 
-Download the parts of `oneuiandroid16system-FIXED-v4.img.gz` from the
-[latest release](../../releases), join and flash:
+Download both parts of the v10 image from [Releases](../../releases), join and flash:
 
 ```bash
-cat oneuiandroid16system-FIXED-v4.img.gz.part* > oneuiandroid16system-FIXED-v4.img.gz
-gunzip oneuiandroid16system-FIXED-v4.img.gz      # -> raw system image
-fastboot flash system oneuiandroid16system-FIXED-v4.img
+cat oneuiandroid16system-FIXED-v10.img.gz.part-* > oneuiandroid16system-FIXED-v10.img.gz
+gunzip oneuiandroid16system-FIXED-v10.img.gz        # -> raw system image
+fastboot flash system oneuiandroid16system-FIXED-v10.img
 ```
 
-After first boot, if anything asks for provisioning:
+Fresh userdata/DSU slot recommended. First boot is slower than usual (SystemUI/services
+re-dexopt after one-time rebuilds). If any app complains about provisioning after boot:
 
 ```bash
 settings put global device_provisioned 1
@@ -40,8 +48,14 @@ settings put secure user_setup_complete 1
 
 ## Known quirks
 
-- First boot takes a while (fresh dexopt).
-- `mcDriverDaemon` (Trustonic TEE, vendor) logs a non-fatal abort — harmless.
+- `mcDriverDaemon` (Trustonic TEE vendor daemon) logs a non-fatal abort — harmless.
 - `nvram_daemon` logs a non-fatal SIGSEGV — harmless.
+- Samsung Messages may show one background crash popup related to missing Samsung AI
+  (scs.ai.search) services — cosmetic only on this device.
 
-Older fixed images (v1–v3) are also attached for reference/bisection.
+## What NOT to do when porting this to other devices
+
+- Never re-sign SystemUI — Android assigns `android.uid.systemui` to platform-signed
+  packages only (a resigned SystemUI is demoted to a normal uid and boot-loops).
+- Never re-sign Samsung's launcher (TouchWizHome) — it loses the hidden-API exemption
+  and crashes on `@UnsupportedAppUsage` blacklist members with NoSuchMethodError.

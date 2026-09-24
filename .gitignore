@@ -1,3 +1,6 @@
-release/
 *.img
-w3.img
+*.img.gz
+*.log
+rel8/
+rel9/
+rel10/
