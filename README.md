@@ -4,7 +4,7 @@ Fully booting One UI 16 GSI port on the TECNO Spark 20 (KJ5, MT6768 / Transsion)
 
 ## Status: boots & stable with One UI Home ✅
 
-Each flashable image below has an increasing set of fixes. Use **FIXED-v10** (latest).
+Each flashable image below has an increasing set of fixes. Use **FIXED-v11** (latest).
 
 Flash & hardware-tested on rooted KJ5 (KernelSU, permissive boot, AVB/vbmeta disabled) — via fastboot or DSU.
 
@@ -30,12 +30,12 @@ Full write-up with disassembly notes and per-version details:
 
 ## Install
 
-Download both parts of the v10 image from [Releases](../../releases), join and flash:
+Download both parts of the v11 image from [Releases](../../releases), join and flash:
 
 ```bash
-cat oneuiandroid16system-FIXED-v10.img.gz.part-* > oneuiandroid16system-FIXED-v10.img.gz
-gunzip oneuiandroid16system-FIXED-v10.img.gz        # -> raw system image
-fastboot flash system oneuiandroid16system-FIXED-v10.img
+cat oneuiandroid16system-FIXED-v11.img.gz.part-* > oneuiandroid16system-FIXED-v11.img.gz
+gunzip oneuiandroid16system-FIXED-v11.img.gz        # -> raw system image
+fastboot flash system oneuiandroid16system-FIXED-v11.img
 ```
 
 Fresh userdata/DSU slot recommended. First boot is slower than usual (SystemUI/services
@@ -59,3 +59,11 @@ settings put secure user_setup_complete 1
   packages only (a resigned SystemUI is demoted to a normal uid and boot-loops).
 - Never re-sign Samsung's launcher (TouchWizHome) — it loses the hidden-API exemption
   and crashes on `@UnsupportedAppUsage` blacklist members with NoSuchMethodError.
+
+## v11 extra: brightness fix baked in
+
+The vendor lights HAL on the KJ5 feeds the panel raw 0-255 values while the panel
+wants 0-4095. The community `skeleton.sh` only fixes max brightness. v11 ships an
+init service (`/system/etc/init/kj5_brightfix.rc` + `/system/bin/kj5-brightfix.sh`)
+that rescales every brightness write linearly — the whole slider range is usable.
+If you had the old `service.d` shadow script installed, remove it.
