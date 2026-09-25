@@ -67,3 +67,11 @@ wants 0-4095. The community `skeleton.sh` only fixes max brightness. v11 ships a
 init service (`/system/etc/init/kj5_brightfix.rc` + `/system/bin/kj5-brightfix.sh`)
 that rescales every brightness write linearly — the whole slider range is usable.
 If you had the old `service.d` shadow script installed, remove it.
+
+## v12 extra: audio-workaround
+
+Audio was dead and the system watchdog restarted on any sound-producing action.
+v12 ships an empty `/system/etc/audio_effects.xml`. In addition, if sound still
+isn't right, install `oneuiKJ5-audiofix.zip` via KernelSU Manager — it overlays the
+same empty config over `/vendor/etc/audio_effects.xml` (not patchable from the
+GSI image). Trade-off: no equalizer/bass/reverb system effects.
