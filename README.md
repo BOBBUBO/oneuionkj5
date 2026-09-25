@@ -75,3 +75,10 @@ v12 ships an empty `/system/etc/audio_effects.xml`. In addition, if sound still
 isn't right, install `oneuiKJ5-audiofix.zip` via KernelSU Manager — it overlays the
 same empty config over `/vendor/etc/audio_effects.xml` (not patchable from the
 GSI image). Trade-off: no equalizer/bass/reverb system effects.
+
+## v13 extra: audio fix, done right
+
+v12's empty audio_effects.xml was too minimal for Samsung's parser (audioserver
+aborted with 'Failed to load XML effect configuration'). v13 restores the stock
+a15x config and the GSU module now only strips the dead `libdtsaudio` (DTS) vendor
+effect. **Flash v13, install/update the oneuiKJ5-audiofix KSU module, reboot.**

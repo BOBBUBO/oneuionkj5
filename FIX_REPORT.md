@@ -49,7 +49,8 @@ clean rebuild from v4 directly.
 | 9 | Launcher crash → black screen: `NoSuchMethodError: DeviceStateManager.<init>()V` — but the real root was deeper: the launcher's crash stream (`getService()`, `getInstance()`, `windowConfiguration`, `FoldStateListener`, `MANAGE_ROLE_HOLDERS`) all turned out to be **hidden-API blacklist denials** — Samsung-signed apps get hidden-API exemption; re-signing lost it | — v8/v9 approach (re-signed launcher+SystemUI edits) abandoned; see v10 |
 | 10 | v7-v9 lesson chain | **v10**: launcher + SystemUI + ClockPack restored 100% stock Samsung-signed; SystemUI crash fixed instead at framework level: patched `services.jar` `ContentProviderHelper.checkContentProviderPermission()` to return allow for authority `com.sec.android.app.launcher.settings` (the launcher settings provider), SecurityException gone without touching any signed app. SDHMS/SohService still removed. `services` odex/vdex dropped → one-time re-dexopt on first boot is expected (slower first boot) |
 | 11 | Ongoing GSI bug (all GSIs on KJ5): brightness slider caps at 255 while panel needs 0-4095. Vendor lights HAL (`android.hardware.lights-service.mediatek`) only reaches full brightness when fed exactly 255. Old `skeleton.sh` hack only fixed the max case | **v11**: baked-in init service `/system/etc/init/kj5_brightfix.rc` + `/system/bin/kj5-brightfix.sh` — watches `/sys/class/leds/lcd-backlight/brightness` at ~100 ms, rescales every 0-255 write to the hardware 0-4095 range linearly (`v × max_brightness / 255` — reads `max_brightness` at runtime, so it adapts if the panel changes). Saves both min and max correctly; drop the old Magisk service.d script |
-| 12 | v11: boot survives but **no sound**, and `audioserver` SIGSEGV-loop kills `system_server` via watchdog on UI actions. Log shows `Could not find android.hardware.audio.core.IModule/default ... IFactory/default in VINTF manifest` (One UI 16 wants AIDL audio; KJ5 ships HIDL audio 7.0) and native crash `AudioPolicyEffects::addOutputSessionEffects → startOutput → TrackHandle::start` | **v12**: replaced `/system/etc/audio_effects.xml` with an empty skeleton + no-op `audio_effects.conf`, **and** package `oneuiKJ5-audiofix.zip` (KernelSU module overlaying `/vendor/etc/audio_effects.xml` with the same empty file) — the crash was in session-effect engine creation against MTK/DTS vendor fx libs under the AIDL-only audioserver |
+| 12 | v11: boot survives but **no sound**, and `audioserver` SIGSEGV-loop kills `system_server` via watchdog on UI actions. Log shows `Could not find android.hardware.audio.core.IModule/default ... IFactory/default in VINTF manifest` (One UI 16 wants AIDL audio; KJ5 ships HIDL audio 7.0) and crash `AudioPolicyEffects::addOutputSessionEffects → startOutput → TrackHandle::start` | **v12 (local trial)**: replaced audio_effects configs with empty files → **audioserver now aborts harder with `Failed to load XML effect configuration`** (its parser doesn't accept the minimal empty file) |
+| 13 | v12 booted but audio dead; abort text pinpoints parse-fail of my empty config, and vendor-side `libdtsaudio` load is the real pre-existing SIGSEGV source | **v13**: restored **original** a15x system `audio_effects.xml/.conf`; KSU module `oneuiKJ5-audiofix.zip` v2 now overlays vendor config with a copy that only removes `libdtsaudio` (`<library name="dtsaudio">` + `effect dtsaudio` lines dropped, everything else kept — verified well-formed XML) |
 
 
 
@@ -304,3 +305,24 @@ Rule of thumb: **jar paths reachable through symlinks fail zygote's fd allowlist
 
 - The HIDL→AIDL audio HAL gap (KJ5 = `android.hardware.audio@7.0` HIDL, One UI 16 asks for `audio.core` AIDL) might mean audio still has to fall back to the legacy shim; if sound is still absent after v12, that half needs a vendor-level port far beyond image tweaks (Mediatek tinyhal port or vendor AIDL adapter). The report here only handles the crash-loop half of the audio story.
 - We can't modify `/vendor/etc/audio_effects.xml` from inside a GSI image, hence the KSU module. If you don't use the module, **still flash v12** — the system-side empty config alone may be enough; the vendor-config crash path depends on whether media.audio_policy merges them on your boot.
+
+## v13 audio — what changed vs v12
+
+- **restored** `/system/etc/audio_effects.xml` + `audio_effects.conf` to the a15x
+  originals (the empty XML I wrote in v12 actually made audioserver abort with
+  `Failed to load XML effect configuration` — hence "worse than broken"). XML parser
+  used by this audioserver doesn't tolerate our crafted minimal skeleton.
+- The real obvious suspicion from the vendor config: `libdtsaudio.so` is an old
+  DTS audio effect built against a legacy audiofx interface; creating it inside the
+  AIDL audioserver null-derfs. The v13 zip removes *just* that one effect; the
+  AOSP-style bundle/reverb/visualizer/downmix etc. still work and the MTK
+  `libaudiopreprocessing_mtk.so` (aec/ns/agc) path stays visible for calls.
+- KernelSU module v2 = the cleanest possible change; nothing else added to vendor.
+
+If call audio (speaker+mic) still misbehaves after v13, the remaining suspect is
+`libaudiopreprocessing_mtk.so` — the voice_communication preprocess entry in the
+vendor config can also be dropped (kept for now, better call quality when it works).
+
+To test after flashing: open any app that starts a music track, **then** toggle
+volume. If there's no audioserver crash in logcat and speaker makes sound, this part
+is done.
