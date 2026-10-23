@@ -1,6 +1,6 @@
 # One UI (Android 16, a15x port) bootloop on TECNO Spark 20 (KJ5) — Root Cause & Fix
 
-> **Flash this:** `oneuiandroid16system-FIXED-v10.img.gz` — confirmed working: launcher up, no more SystemUI crash loops on multitasking/screenshot/messages.
+> **Published:** `oneuiandroid16system-FIXED-v15.img.gz` (release **v1.2**) — launcher up, brightness fix baked in, and speaker + wired-headphone audio working. Bluetooth audio is not fixed yet.
 
 ## Understanding of the app-layer bugs so far
 
@@ -51,6 +51,8 @@ clean rebuild from v4 directly.
 | 11 | Ongoing GSI bug (all GSIs on KJ5): brightness slider caps at 255 while panel needs 0-4095. Vendor lights HAL (`android.hardware.lights-service.mediatek`) only reaches full brightness when fed exactly 255. Old `skeleton.sh` hack only fixed the max case | **v11**: baked-in init service `/system/etc/init/kj5_brightfix.rc` + `/system/bin/kj5-brightfix.sh` — watches `/sys/class/leds/lcd-backlight/brightness` at ~100 ms, rescales every 0-255 write to the hardware 0-4095 range linearly (`v × max_brightness / 255` — reads `max_brightness` at runtime, so it adapts if the panel changes). Saves both min and max correctly; drop the old Magisk service.d script |
 | 12 | v11: boot survives but **no sound**, and `audioserver` SIGSEGV-loop kills `system_server` via watchdog on UI actions. Log shows `Could not find android.hardware.audio.core.IModule/default ... IFactory/default in VINTF manifest` (One UI 16 wants AIDL audio; KJ5 ships HIDL audio 7.0) and crash `AudioPolicyEffects::addOutputSessionEffects → startOutput → TrackHandle::start` | **v12 (local trial)**: replaced audio_effects configs with empty files → **audioserver now aborts harder with `Failed to load XML effect configuration`** (its parser doesn't accept the minimal empty file) |
 | 13 | v12 booted but audio dead; abort text pinpoints parse-fail of my empty config, and vendor-side `libdtsaudio` load is the real pre-existing SIGSEGV source | **v13**: restored **original** a15x system `audio_effects.xml/.conf`; KSU module `oneuiKJ5-audiofix.zip` v2 now overlays vendor config with a copy that only removes `libdtsaudio` (`<library name="dtsaudio">` + `effect dtsaudio` lines dropped, everything else kept — verified well-formed XML) |
+| 14 | v13 still silent; audioserver called `loadFromApmXmlConfigWithFallback("")` and searched only for `audio_policy_configuration_sec.xml`, which the KJ5 vendor does not ship | **v14**: added `/system/etc/audio_policy_configuration_sec.xml` (KJ5 AOSP policy with absolute `/vendor/etc/...` includes). Hardware test: primary HAL loaded, Speaker opened, volume 1.0 — but first track still aborted audioserver with `AudioPolicyEffects: Failed to load XML effect configuration` |
+| 15 | v14's abort is a second missing Samsung file: `libeffectsconfig.so` appends `audio_effects_sec.xml` to `/vendor/etc/audio`, `/vendor/etc`, `/system/etc`; none existed, so `effectsConfig::parse(NULL)` returned null and `audioserver` hit `__android_log_assert` | **v15**: added `/system/etc/audio_effects_sec.xml` (DTS-stripped KJ5 vendor config). **Hardware-tested:** speaker and wired headphones work, no audioserver abort. Module `oneuiKJ5-audiofix-v4.zip` is diagnostics-only because its KSU/SUSFS overlay did not apply |
 
 
 
@@ -326,3 +328,220 @@ vendor config can also be dropped (kept for now, better call quality when it wor
 To test after flashing: open any app that starts a music track, **then** toggle
 volume. If there's no audioserver crash in logcat and speaker makes sound, this part
 is done.
+
+## v14 audio — root cause #1: Samsung's policy file is missing
+
+v13 fixed the worst effect crash but still had **no sound at all**, without an
+audioserver crash. That is the signature of an **empty audio policy**, not a dead
+HAL. Disassembly of the a15x `audioserver` confirms it:
+
+- `audioserver` calls `AudioPolicyConfig::loadFromApmXmlConfigWithFallback()` with an
+  **empty std::string** (a15x `audioserver` at `0x26237c`). It does **not** pass
+  `/vendor/etc/audio_policy_configuration.xml`.
+- `libaudiopolicycomponents.so` then searches these directories for a file literally
+  named `audio_policy_configuration_sec.xml` (function at `0x5fdf0`):
+  `/odm/etc`, `/vendor/etc/audio`, `/vendor/etc`, `/system/etc`.
+- The KJ5 vendor partition only has the AOSP file
+  `/vendor/etc/audio_policy_configuration.xml`; it has **no**
+  `audio_policy_configuration_sec.xml` in any of those directories.
+- When no file is found, `AudioPolicyConfig::setDefault()` is used. That config has
+  no modules/devices/routes, so AudioFlinger has nothing to open → silence. The
+  framework still boots and the volume slider still moves, which is exactly what was
+  observed.
+
+The a15x vendor supplies Samsung's `audio_policy_configuration_sec.xml`; a
+Transsion KJ5 vendor does not. This is a **system-side** dependency of the Samsung
+audioserver, not a kernel/driver problem.
+
+### Fix in v14
+
+Add a system-side fallback file at
+`/system/etc/audio_policy_configuration_sec.xml` (last directory in the search list).
+Its contents are the KJ5 AOSP policy (`/vendor/etc/audio_policy_configuration.xml`),
+with every XInclude changed to an absolute `/vendor/etc/...` path so it works when
+loaded from `/system/etc`:
+
+```
+/vendor/etc/bluetooth_audio_policy_configuration.xml
+/vendor/etc/a2dp_in_audio_policy_configuration.xml
+/vendor/etc/usb_audio_accessory_only_policy_configuration.xml
+/vendor/etc/r_submix_audio_policy_configuration.xml
+/vendor/etc/audio_policy_volumes.xml
+/vendor/etc/default_volume_tables.xml
+```
+
+The file is mode 0644, root:root, labeled `u:object_r:system_file:s0`, and the image
+passes `e2fsck -f`.
+
+Runtime confirmation (same GSI `libaudiopolicycomponents.so` loaded under the stock
+KJ5 kernel, with an `access()`/`open()` shim):
+
+```
+access /odm/etc/audio_policy_configuration_sec.xml
+access /vendor/etc/audio/audio_policy_configuration_sec.xml
+access /vendor/etc/audio_policy_configuration_sec.xml
+access /system/etc/audio_policy_configuration_sec.xml
+open   /system/etc/audio_policy_configuration_sec.xml
+open   /vendor/etc/bluetooth_audio_policy_configuration.xml
+open   /vendor/etc/a2dp_in_audio_policy_configuration.xml
+open   /vendor/etc/usb_audio_accessory_only_policy_configuration.xml
+open   /vendor/etc/r_submix_audio_policy_configuration.xml
+open   /vendor/etc/audio_policy_volumes.xml
+open   /vendor/etc/default_volume_tables.xml
+```
+
+Without the file, the same run walks all four `*_sec.xml` paths and then falls back
+to `audio_policy_configuration_base.xml`/default. With it, the search stops at
+`/system/etc` and every vendor include opens successfully.
+
+The same file is in the updated KSU module `oneuiKJ5-audiofix-v3.zip` under
+`system/etc/`, so users who keep the already-installed v13 DSU can test without
+rebuilding the image. That module also keeps the DTS-stripped
+`/vendor/etc/audio_effects.xml` from v2 and adds a `service.sh` that writes
+`/sdcard/oneui_kj5_audio_diag.txt` after boot for the next debugging round.
+
+### Why "move the vendor drivers into the GSI" is not the fix
+
+The KJ5 **kernel** already provides every driver (sound card, ALSA, MTK/Transsion
+codecs). A GSI uses the stock KJ5 boot image/kernel and the stock vendor partition.
+The missing piece is a **userspace configuration file** expected by Samsung's
+audioserver, not a kernel driver. Moving `.ko` files or the vendor HAL into `/system`
+would not create `audio_policy_configuration_sec.xml`, and would break VINTF/SELinux
+and vendor ABI assumptions.
+
+### v14 hardware test result — policy fixed, effects become fatal
+
+v14 was tested with the v3 module. The audio policy fix worked: `/system/etc/audio_policy_configuration_sec.xml`
+was present (19617 bytes), audioserver loaded the primary HAL, opened the Speaker
+output, applied the normal output routes, and reached media volume `1.0`. The policy
+is no longer empty.
+
+The first audio track then killed audioserver:
+
+```
+F AudioPolicyEffects: Failed to load XML effect configuration
+F libc: Fatal signal 6 (SIGABRT), code -1 (SI_QUEUE) in tid ... pid ... (audioserver)
+```
+
+immediately after:
+
+```
+E AudioPolicyEffects: Function: loadAudioEffectConfig_ll Line: 979 Failed result (BAD_VALUE)
+W AudioPolicyEffects: Failed to query effect configuration, fallback to load .conf
+```
+
+The audioserver restarted and repeated the sequence, so the speaker never produced
+sound. The crash is **not** a policy or HAL failure; it is a second missing Samsung
+configuration file.
+
+### v15 root cause — `audio_effects_sec.xml` is the file actually loaded
+
+v13 restored `/system/etc/audio_effects.xml`, but this audioserver does not call
+`effectsConfig::parse()` with that filename. Disassembly of the GSI `audioserver`
+shows the null-path call:
+
+```
+27ff40: mov x0, xzr                 ; parse(NULL)
+27ff4c: bl  effectsConfig::parse
+...
+280190: bl  __android_log_assert    ; tag "AudioPolicyEffects", message
+                                    ; "Failed to load XML effect configuration"
+```
+
+`libeffectsconfig.so` then builds candidate paths by appending a fixed filename to
+these directories (disassembly at `0x6810`–`0x6974`; append at `0x42b0`; strings at
+`.rodata+0xe70`, `+0xe80`, `+0xe90`, `+0x1b46`):
+
+```
+/vendor/etc/audio/audio_effects_sec.xml
+/vendor/etc/audio_effects_sec.xml
+/system/etc/audio_effects_sec.xml
+```
+
+(`/vendor/etc/audio/sku_<sku>/...` is added only if `ro.boot.product.vendor.sku` is
+non-empty; it is empty on the KJ5.)
+
+None of those files exists on the KJ5 vendor/GSI combination. `parse(NULL)` returns
+null, and the assert aborts audioserver on the first effect/session query. This also
+explains why restoring `audio_effects.xml` in v13 changed nothing: only `_sec.xml` is
+consulted here.
+
+An offline test with the GSI `libeffectsconfig.so` confirmed the parser behavior:
+
+```
+/vendor/etc/audio_effects.xml                    -> PARSED
+DTS-stripped KJ5 vendor config                   -> PARSED
+/system/etc/audio_effects_sec.xml (absent)       -> FAILED
+v15 file bind-mounted at /system/etc             -> PARSED
+```
+
+The vendor effect HAL also logs two non-fatal failures while enumerating Dolby
+descriptors:
+
+```
+E EffectFactoryHAL: Error creating effect 9d4921da-8225-4f29-aefa-39537a04bcaa
+E EffectFactoryHAL: Error creating effect 05227ea0-50bb-11e3-ac69-0002a5d5c51b
+```
+
+Those UUIDs are Dolby DAP / related vendor effects, not entries in the AOSP or KJ5
+XML. They are not the SIGABRT source; the abort happens earlier, when the missing
+`audio_effects_sec.xml` fails to parse.
+
+### Fix in v15
+
+Add `/system/etc/audio_effects_sec.xml` using the KJ5 vendor effects config with the
+legacy DTS entries removed. It keeps the AOSP bundle/reverb/visualizer/downmix/
+loudness/dynamics effects and the MTK `aec`/`ns`/`agc` preprocessing entries, while
+dropping `libdtsaudio.so` and the `dtsaudio` effect (the known legacy crash source).
+The file is mode 0644, root:root, labeled `u:object_r:system_file:s0`; the image
+passes `e2fsck -fn`.
+
+The same file is in module `oneuiKJ5-audiofix-v4.zip` under `system/etc/`, along with
+the v14 policy file and the DTS-stripped vendor config. Its `service.sh` also
+dumps both effects configs, their hashes, `dumpsys media.audio_flinger` /
+`media.audio_policy`, and the relevant logcat lines.
+
+**However, the module's file overlay did not apply on the target KSU/SUSFS setup
+(2026-10-22 test).** The service still ran and produced a diagnostic, but:
+
+```
+/system/etc/audio_effects_sec.xml      absent
+/vendor/etc/audio_effects_sec.xml      absent
+/vendor/etc/audio_effects.xml          7235 bytes (stock, not the 7077-byte DTS-stripped file)
+```
+
+The audioserver therefore kept aborting with the same `Failed to load XML effect
+configuration` message. The v15 image has the file baked into `/system`, so it does
+not depend on the module overlay. Keep the module only for diagnostics; flash v15
+for the actual fix.
+
+### v15 hardware test result — speaker and wired headphones work
+
+The v15 image was installed and booted on the KJ5. **Speaker audio works, and wired
+headphones work at 100% volume.** The audioserver no longer aborts on the first track,
+and there is no repeat of the `AudioPolicyEffects: Failed to load XML effect
+configuration` SIGABRT.
+
+Bluetooth audio is still not working on this port, so it could not be validated; that
+is a separate issue from the wired audio path.
+
+The v4 module can stay installed for its diagnostic script, but it is not needed for
+the fix and its overlay did not apply on the tested KSU/SUSFS setup.
+
+### Published release v1.2 artifacts
+
+- Release: `v1.2` — `oneuiandroid16system-FIXED-v15.img.gz`, split into two parts
+  because GitHub's asset limit is 2 GB.
+- `oneuiandroid16system-FIXED-v15.img.gz.part-00`
+  - SHA-256 `b91e1802f7a934f7f933f921add06d48a21007b7cb231c098dfb693d877275ae`
+- `oneuiandroid16system-FIXED-v15.img.gz.part-01`
+  - SHA-256 `3eb68ed8135904833f2ba3836c1fd8d3f52db31b8cbe26bc241bbf2e3780d4d3`
+- Joined `oneuiandroid16system-FIXED-v15.img.gz`
+  - SHA-256 `689b10672036801b7f07033d8cb14f6ae30cddf1c5c0e40b6f2ab6fba7ee1fd8`
+  - decompresses to `debd3227caf97dfc7f008477aa3ac1e72a630dd89e8ed6ed8e434cdce2d4d7c3`
+  - `gzip -t` clean; `e2fsck -f` clean
+- Added effects config: `/system/etc/audio_effects_sec.xml`
+  - SHA-256 `ab3bab0f0e2c729dbeb50ff864acd8e986e2d17b8fd8e28b992a1985c3dcc53e`
+  - 7077 bytes, mode 0644, root:root, `u:object_r:system_file:s0`
+- KernelSU module `oneuiKJ5-audiofix-v4.zip` is not part of the release; it is
+  diagnostics-only on the tested setup.

@@ -2,9 +2,13 @@
 
 Fully booting One UI 16 GSI port on the TECNO Spark 20 (KJ5, MT6768 / Transsion), fixed for this device.
 
-## Status: boots & stable with One UI Home ✅
+## Status: boots & stable with One UI Home ✅ — speaker and wired-headphone audio fixed
 
-Each flashable image below has an increasing set of fixes. Use **FIXED-v11** (latest).
+The latest release is **FIXED-v15** (release **v1.2**): speaker and wired-headphone
+audio work. Bluetooth audio is not fixed yet. The v15 image adds the missing Samsung
+policy file **and** the missing `audio_effects_sec.xml`; see
+[FIX_REPORT.md](FIX_REPORT.md) for the evidence. The v4 KernelSU module's overlay did
+**not** apply on the tested KSU/SUSFS setup, so use the v15 image, not the module.
 
 Flash & hardware-tested on rooted KJ5 (KernelSU, permissive boot, AVB/vbmeta disabled) — via fastboot or DSU.
 
@@ -30,12 +34,12 @@ Full write-up with disassembly notes and per-version details:
 
 ## Install
 
-Download both parts of the v11 image from [Releases](../../releases), join and flash:
+Download both parts of the v15 image from [Releases](../../releases), join and flash:
 
 ```bash
-cat oneuiandroid16system-FIXED-v11.img.gz.part-* > oneuiandroid16system-FIXED-v11.img.gz
-gunzip oneuiandroid16system-FIXED-v11.img.gz        # -> raw system image
-fastboot flash system oneuiandroid16system-FIXED-v11.img
+cat oneuiandroid16system-FIXED-v15.img.gz.part-* > oneuiandroid16system-FIXED-v15.img.gz
+gunzip oneuiandroid16system-FIXED-v15.img.gz        # -> raw system image
+fastboot flash system oneuiandroid16system-FIXED-v15.img
 ```
 
 Fresh userdata/DSU slot recommended. First boot is slower than usual (SystemUI/services
@@ -48,6 +52,7 @@ settings put secure user_setup_complete 1
 
 ## Known quirks
 
+- Bluetooth audio does not work yet; speaker and wired headphones do.
 - `mcDriverDaemon` (Trustonic TEE vendor daemon) logs a non-fatal abort — harmless.
 - `nvram_daemon` logs a non-fatal SIGSEGV — harmless.
 - Samsung Messages may show one background crash popup related to missing Samsung AI
@@ -68,17 +73,40 @@ init service (`/system/etc/init/kj5_brightfix.rc` + `/system/bin/kj5-brightfix.s
 that rescales every brightness write linearly — the whole slider range is usable.
 If you had the old `service.d` shadow script installed, remove it.
 
-## v12 extra: audio-workaround
+## Audio status (v12 → v15)
 
-Audio was dead and the system watchdog restarted on any sound-producing action.
-v12 ships an empty `/system/etc/audio_effects.xml`. In addition, if sound still
-isn't right, install `oneuiKJ5-audiofix.zip` via KernelSU Manager — it overlays the
-same empty config over `/vendor/etc/audio_effects.xml` (not patchable from the
-GSI image). Trade-off: no equalizer/bass/reverb system effects.
+- **v12** shipped an empty `/system/etc/audio_effects.xml`; Samsung's parser rejected
+  it (`Failed to load XML effect configuration`). Do not use v12.
+- **v13** restored the stock a15x effects config and removed the vendor DTS effect
+  through a KernelSU module. It did not restore sound: One UI's audioserver never
+  loads `/vendor/etc/audio_policy_configuration.xml`. It only searches for Samsung's
+  `audio_policy_configuration_sec.xml`, which the KJ5 vendor does not ship, then falls
+  back to an empty default policy.
+- **v14** adds `/system/etc/audio_policy_configuration_sec.xml` (the KJ5 AOSP policy
+  with absolute `/vendor/etc/...` includes). Hardware test confirmed the policy fix:
+  the speaker output opened and volume reached 1.0. But the first audio track still
+  aborted `audioserver` with `AudioPolicyEffects: Failed to load XML effect
+  configuration`.
+- **v15** adds the missing `/system/etc/audio_effects_sec.xml` (the DTS-stripped KJ5
+  vendor effects config). Samsung's loader looks for `audio_effects_sec.xml`, not the
+  `audio_effects.xml` restored in v13, and treats a missing file as fatal on the first
+  playback. **Hardware-tested:** speaker and wired headphones work; audioserver no
+  longer aborts. Bluetooth audio remains unfixed.
+- The v4 KernelSU module was tried on v14. Its `service.sh` ran, but the KSU/SUSFS
+  file overlay did **not** apply: `/system/etc/audio_effects_sec.xml` and
+  `/vendor/etc/audio_effects_sec.xml` were absent, and `/vendor/etc/audio_effects.xml`
+  remained the stock 7235-byte file. The module is therefore diagnostics-only on this
+  setup; use the v15 image, which has the file baked into `/system`.
 
-## v13 extra: audio fix, done right
+Full technical evidence is in **[FIX_REPORT.md](FIX_REPORT.md)**.
 
-v12's empty audio_effects.xml was too minimal for Samsung's parser (audioserver
-aborted with 'Failed to load XML effect configuration'). v13 restores the stock
-a15x config and the GSU module now only strips the dead `libdtsaudio` (DTS) vendor
-effect. **Flash v13, install/update the oneuiKJ5-audiofix KSU module, reboot.**
+## Release v1.2 artifacts
+
+- `oneuiandroid16system-FIXED-v15.img.gz.part-00` — SHA-256
+  `b91e1802f7a934f7f933f921add06d48a21007b7cb231c098dfb693d877275ae`
+- `oneuiandroid16system-FIXED-v15.img.gz.part-01` — SHA-256
+  `3eb68ed8135904833f2ba3836c1fd8d3f52db31b8cbe26bc241bbf2e3780d4d3`
+- Joined `oneuiandroid16system-FIXED-v15.img.gz` — SHA-256
+  `689b10672036801b7f07033d8cb14f6ae30cddf1c5c0e40b6f2ab6fba7ee1fd8`
+- Raw image after `gunzip` — SHA-256
+  `debd3227caf97dfc7f008477aa3ac1e72a630dd89e8ed6ed8e434cdce2d4d7c3`
