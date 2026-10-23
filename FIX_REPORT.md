@@ -517,16 +517,16 @@ for the actual fix.
 
 ### v15 hardware test result — speaker and wired headphones work
 
-The v15 image was installed and booted on the KJ5. **Speaker audio works, and wired
-headphones work at 100% volume.** The audioserver no longer aborts on the first track,
-and there is no repeat of the `AudioPolicyEffects: Failed to load XML effect
-configuration` SIGABRT.
+The v15 image was installed and booted on the KJ5 **without the KernelSU audio module
+installed**. **Speaker audio works, and wired headphones work at 100% volume.** The
+audioserver no longer aborts on the first track, and there is no repeat of the
+`AudioPolicyEffects: Failed to load XML effect configuration` SIGABRT.
 
 Bluetooth audio is still not working on this port, so it could not be validated; that
 is a separate issue from the wired audio path.
 
-The v4 module can stay installed for its diagnostic script, but it is not needed for
-the fix and its overlay did not apply on the tested KSU/SUSFS setup.
+This confirms the fix is entirely in the baked image. The v4 module is not required;
+its overlay did not apply on the earlier v14 test either.
 
 ### Published release v1.2 artifacts
 

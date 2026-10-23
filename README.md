@@ -7,8 +7,9 @@ Fully booting One UI 16 GSI port on the TECNO Spark 20 (KJ5, MT6768 / Transsion)
 The latest release is **FIXED-v15** (release **v1.2**): speaker and wired-headphone
 audio work. Bluetooth audio is not fixed yet. The v15 image adds the missing Samsung
 policy file **and** the missing `audio_effects_sec.xml`; see
-[FIX_REPORT.md](FIX_REPORT.md) for the evidence. The v4 KernelSU module's overlay did
-**not** apply on the tested KSU/SUSFS setup, so use the v15 image, not the module.
+[FIX_REPORT.md](FIX_REPORT.md) for the evidence. v15 was tested **without** the
+KernelSU audio module; the fix is entirely baked into the image. The module's overlay
+did not apply on the earlier v14 test anyway, so it is not needed.
 
 Flash & hardware-tested on rooted KJ5 (KernelSU, permissive boot, AVB/vbmeta disabled) — via fastboot or DSU.
 
@@ -95,8 +96,8 @@ If you had the old `service.d` shadow script installed, remove it.
 - The v4 KernelSU module was tried on v14. Its `service.sh` ran, but the KSU/SUSFS
   file overlay did **not** apply: `/system/etc/audio_effects_sec.xml` and
   `/vendor/etc/audio_effects_sec.xml` were absent, and `/vendor/etc/audio_effects.xml`
-  remained the stock 7235-byte file. The module is therefore diagnostics-only on this
-  setup; use the v15 image, which has the file baked into `/system`.
+  remained the stock 7235-byte file. **v15 was tested without the module installed**;
+  the image alone fixes audio, so no module is required.
 
 Full technical evidence is in **[FIX_REPORT.md](FIX_REPORT.md)**.
 
